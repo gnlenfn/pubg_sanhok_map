@@ -23,6 +23,8 @@ def build():
         f'--add-data={os.path.join("assets", "icon.ico")}{separator}assets',
         '--clean',
         '--icon=' + os.path.join('assets', 'icon.ico'),
+        '--exclude-module=numpy',
+        '--exclude-module=cv2',
         # '--windowed' is implied by --noconsole but good to be explicit for Mac
         '--windowed', 
     ])

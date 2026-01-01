@@ -1,0 +1,37 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.ps1 | iex
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Build Executable
+        run: uv run build.py
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/PUBG_Map_Overlay.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

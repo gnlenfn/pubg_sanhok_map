@@ -32,7 +32,7 @@ class OverlayApp:
         
         # Set Window Icon (Taskbar)
         try:
-            self.root.iconbitmap(self.resource_path("icon.ico"))
+            self.root.iconbitmap(self.resource_path("assets/icon.ico"))
         except:
             pass
         
@@ -176,7 +176,7 @@ class OverlayApp:
         # Try to load custom icon, fallback to overlay circle if missing
         try:
             icon_path = self.resource_path("assets/icon.ico")
-            image = Image.open(icon_path)
+            self.settings_window.iconbitmap(icon_path)
         except:
              image = Image.open(self.resource_path("assets/overlay_circle.png"))
 

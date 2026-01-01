@@ -9,10 +9,7 @@ def build():
     else:
         separator = ":"
 
-    # Define the data to bundle
-    # Format: "source_path{separator}destination_path"
-    # Bundle both the overlay image and the icon
-    add_data = f"overlay_circle.png{separator}.{separator}icon.ico{separator}."
+    print(f"Building for {platform.system()}...")
 
     print(f"Building for {platform.system()}...")
     print(f"Resource separator: '{separator}'")

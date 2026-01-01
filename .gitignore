@@ -1,0 +1,34 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+*.spec
+
+# Virtual environments
+.venv
+venv/
+env/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Large Assets (Source images that shouldn't be in git)
+image.png
+qhd.jpg
+qhd*.jpg
+
+# Config files
+config.ini
+
+# Archives/Builds
+*.zip
+*.tar.gz
+*.rar
+
+# IDE Settings
+.vscode/
+.idea/

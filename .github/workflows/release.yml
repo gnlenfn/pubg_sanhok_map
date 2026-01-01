@@ -11,6 +11,10 @@ jobs:
     permissions:
       contents: write
 
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -28,6 +32,16 @@ jobs:
 
       - name: Build Executable
         run: uv run build.py
+
+      - name: Verify Build Artifact
+        run: |
+          if (Test-Path "dist/PUBG_Map_Overlay.exe") {
+            echo "Executable found!"
+            ls dist/
+          } else {
+            echo "Executable NOT found!"
+            exit 1
+          }
 
       - name: Release
         uses: softprops/action-gh-release@v2

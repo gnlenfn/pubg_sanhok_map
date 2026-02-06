@@ -12,7 +12,7 @@ import ctypes
 if platform.system() == "Windows":
     from ctypes import windll, wintypes
 
-CONFIG_VERSION = "1.1"
+CONFIG_VERSION = "1.2"
 
 class OverlayApp:
     def __init__(self, root):
@@ -146,7 +146,8 @@ class OverlayApp:
         self.config["Hotkeys"] = {
             "toggle_visibility": "<f8>",
             "open_settings": "<f12>",
-            "measure_distance": "<alt>+<f9>"
+            "measure_distance": "\\",
+            "calibrate_mode": "<shift>+\\"
         }
         self.config["Calibration"] = {
             "pixels_per_km": "0.0"
@@ -160,13 +161,15 @@ class OverlayApp:
 
         self.hotkey_visible = self.config.get("Hotkeys", "toggle_visibility", fallback="<f8>")
         self.hotkey_settings = self.config.get("Hotkeys", "open_settings", fallback="<f12>")
-        self.hotkey_measure = self.config.get("Hotkeys", "measure_distance", fallback="<alt>+<f9>")
+        self.hotkey_measure = self.config.get("Hotkeys", "measure_distance", fallback="\\")
+        self.hotkey_calibrate = self.config.get("Hotkeys", "calibrate_mode", fallback="<shift>+\\")
 
         try:
             self.listener = keyboard.GlobalHotKeys({
-                self.hotkey_visible: self.toggle_visibility,
-                self.hotkey_settings: self.open_settings_window,
-                self.hotkey_measure: self.toggle_measurement_mode
+                self.hotkey_visible: lambda: self.root.after(0, self.toggle_visibility),
+                self.hotkey_settings: lambda: self.root.after(0, self.open_settings_window),
+                self.hotkey_measure: lambda: self.root.after(0, self.toggle_measurement_mode),
+                self.hotkey_calibrate: lambda: self.root.after(0, self.start_calibration_mode)
             })
             self.listener.start()
         except ValueError as e:
@@ -287,18 +290,35 @@ class OverlayApp:
             try:
                 hwnd = windll.user32.GetParent(self.root.winfo_id())
                 style = windll.user32.GetWindowLongW(hwnd, -20)
-                # Remove WS_EX_TRANSPARENT
-                style = style & ~0x20
+                # Remove WS_EX_TRANSPARENT and WS_EX_NOACTIVATE
+                style = style & ~0x20 & ~0x08000000
                 windll.user32.SetWindowLongW(hwnd, -20, style)
+                
+                # Force window to be visible and receive clicks
+                windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                windll.user32.BringWindowToTop(hwnd)
+                windll.user32.UpdateWindow(hwnd)
+                self.root.focus_force()
             except Exception as e:
                 print(f"Failed to disable click-through: {e}")
         
-        # Bind canvas click
-        self.canvas.bind("<Button-1>", self.handle_canvas_click)
+        # Unbind first to prevent duplicate bindings
+        try:
+            self.root.unbind("<Home>")
+        except:
+            pass
+            
+        # Bind keyboard for marking points (Home key)
+        self.root.bind("<Home>", self.handle_mark_point)
+        print(f"[DEBUG] Calibration mode: Home key bound, calibration_mode={self.calibration_mode}")
+        print(f"[DEBUG] Current focus: {self.root.focus_get()}")
         
-        # Close settings window if open
-        if hasattr(self, 'settings_window') and self.settings_window.winfo_exists():
-            self.settings_window.destroy()
+        # Create a semi-transparent overlay to capture clicks (black is transparent, so use gray)
+        self.calibration_overlay = self.canvas.create_rectangle(
+            0, 0, self.screen_width, self.screen_height,
+            fill="gray", stipple="gray25", outline=""
+        )
+        
 
     def toggle_measurement_mode(self):
         """Toggle measurement mode on/off"""
@@ -326,22 +346,64 @@ class OverlayApp:
                 try:
                     hwnd = windll.user32.GetParent(self.root.winfo_id())
                     style = windll.user32.GetWindowLongW(hwnd, -20)
-                    # Remove WS_EX_TRANSPARENT
-                    style = style & ~0x20
+                    # Remove WS_EX_TRANSPARENT and WS_EX_NOACTIVATE
+                    style = style & ~0x20 & ~0x08000000
                     windll.user32.SetWindowLongW(hwnd, -20, style)
+                    
+                    # Force window to be visible and receive clicks
+                    windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                    windll.user32.BringWindowToTop(hwnd)
+                    windll.user32.UpdateWindow(hwnd)
+                    self.root.focus_force()
                 except Exception as e:
                     print(f"Failed to disable click-through: {e}")
             
-            # Bind canvas click
-            self.canvas.bind("<Button-1>", self.handle_canvas_click)
+            
+            # Unbind first to prevent duplicate bindings
+            try:
+                self.root.unbind("<Home>")
+            except:
+                pass
+            
+            # Bind keyboard for marking points (Home key)
+            self.root.bind("<Home>", self.handle_mark_point)
+            print(f"[DEBUG] Measurement mode: Home key bound, measurement_mode={self.measurement_mode}")
+            print(f"[DEBUG] Current focus: {self.root.focus_get()}")
+            
+            # Create a semi-transparent overlay to capture clicks
+            self.measurement_overlay = self.canvas.create_rectangle(
+                0, 0, self.screen_width, self.screen_height,
+                fill="gray", stipple="gray25", outline=""
+            )
+
+
+    def handle_mark_point(self, event):
+        """Handle keyboard press to mark point at current cursor position"""
+        print(f"[DEBUG] Mark point key pressed!")
+        # Get current mouse position relative to screen
+        x = self.root.winfo_pointerx() - self.root.winfo_rootx()
+        y = self.root.winfo_pointery() - self.root.winfo_rooty()
+        
+        # Create a fake mouse event with cursor position
+        class FakeEvent:
+            pass
+        
+        fake_event = FakeEvent()
+        fake_event.x = x
+        fake_event.y = y
+        
+        # Call the existing click handler
+        self.handle_canvas_click(fake_event)
 
     def handle_canvas_click(self, event):
         """Handle canvas clicks for calibration and measurement modes"""
+        print(f"[DEBUG] handle_canvas_click called: calibration_mode={self.calibration_mode}, measurement_mode={self.measurement_mode}")
         if self.calibration_mode:
+            print(f"[Calibration] Click registered at ({event.x}, {event.y}) - Point {len(self.calibration_points) + 1}/2")
             self.calibration_points.append((event.x, event.y))
             
             # Draw marker
-            marker_size = 10
+            marker_size = 4
             self.canvas.create_oval(
                 event.x - marker_size, event.y - marker_size,
                 event.x + marker_size, event.y + marker_size,
@@ -363,14 +425,15 @@ class OverlayApp:
                 
                 print(f"Calibration complete: 1km = {pixel_distance:.2f} pixels")
                 
-                # Exit calibration mode after 2 seconds
-                self.root.after(2000, self.exit_calibration_mode)
+                # Exit calibration mode after 0.5 seconds
+                self.root.after(500, self.exit_calibration_mode)
         
         elif self.measurement_mode:
+            print(f"[Measurement] Click registered at ({event.x}, {event.y}) - Point {len(self.measurement_points) + 1}/2")
             self.measurement_points.append((event.x, event.y))
             
             # Draw marker
-            marker_size = 10
+            marker_size = 4
             self.canvas.create_oval(
                 event.x - marker_size, event.y - marker_size,
                 event.x + marker_size, event.y + marker_size,
@@ -404,8 +467,12 @@ class OverlayApp:
                 
                 print(f"Distance: {distance_m:.0f}m")
                 
-                # Exit measurement mode after 3 seconds
-                self.root.after(3000, self.exit_measurement_mode)
+                # Exit measurement mode immediately and pass distance data to redraw
+                line_id, text_id = self.exit_measurement_mode(keep_visuals=True, 
+                    distance_data=(x1, y1, x2, y2, distance_m))
+                
+                # Clear distance visuals after 3 seconds
+                self.root.after(3000, lambda: self.clear_distance_visuals(line_id, text_id))
 
     def calculate_distance(self, point1, point2):
         """Calculate real-world distance in meters between two points"""
@@ -423,7 +490,7 @@ class OverlayApp:
         """Exit calibration mode and restore overlay"""
         self.calibration_mode = False
         self.calibration_points = []
-        self.canvas.unbind("<Button-1>")
+        self.root.unbind("<Home>")
         self.canvas.delete("all")
         
         # Restore click-through
@@ -434,20 +501,16 @@ class OverlayApp:
         self.update_image()
         print("Calibration mode exited.")
 
-    def exit_measurement_mode(self):
+    def exit_measurement_mode(self, keep_visuals=False, distance_data=None):
         """Exit measurement mode and restore overlay"""
         self.measurement_mode = False
         self.measurement_points = []
-        self.canvas.unbind("<Button-1>")
         
-        # Clear measurement visuals
-        if self.measurement_line:
-            self.canvas.delete(self.measurement_line)
-            self.measurement_line = None
-        if self.measurement_text:
-            self.canvas.delete(self.measurement_text)
-            self.measurement_text = None
+        # Only unbind if not keeping visuals (fully exiting)
+        if not keep_visuals:
+            self.root.unbind("<Home>")
         
+        # Always delete all canvas items (overlay, markers, old visuals)
         self.canvas.delete("all")
         
         # Restore click-through
@@ -456,7 +519,43 @@ class OverlayApp:
         
         # Restore overlay
         self.update_image()
-        print("Measurement mode exited.")
+        
+        # Redraw distance visuals if keeping them
+        if keep_visuals and distance_data:
+            x1, y1, x2, y2, distance_m = distance_data
+            
+            # Redraw line
+            line_id = self.canvas.create_line(
+                x1, y1, x2, y2, fill="#FF3250", width=3
+            )
+            
+            # Redraw text
+            mid_x = (x1 + x2) / 2
+            mid_y = (y1 + y2) / 2
+            text_id = self.canvas.create_text(
+                mid_x + 20, mid_y - 20,
+                text=f"{distance_m:.0f}m",
+                fill="#FF3250", font=("Arial", 20, "bold"),
+                anchor="w"
+            )
+            
+            print("Measurement mode exited.")
+            return line_id, text_id
+        else:
+            self.measurement_line = None
+            self.measurement_text = None
+            print("Measurement mode exited.")
+            return None, None
+    
+    def clear_distance_visuals(self, line_id, text_id):
+        """Clear distance measurement visuals after delay"""
+        try:
+            if line_id:
+                self.canvas.delete(line_id)
+            if text_id:
+                self.canvas.delete(text_id)
+        except:
+            pass  # Canvas item may already be deleted
 
     def open_settings_window(self):
         if hasattr(self, 'settings_window') and self.settings_window.winfo_exists():
@@ -501,6 +600,16 @@ class OverlayApp:
         
         # Header
         ttk.Label(main_frame, text="Settings", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
+
+        # Buttons (Bottom) - Pack *before* notebook to ensure visibility
+        btn_frame = ttk.Frame(main_frame, style="TFrame")
+        btn_frame.pack(side="bottom", fill="x", pady=(20, 0))
+        
+        save_btn = ttk.Button(btn_frame, text="Save", command=self.save_settings, style="Accent.TButton")
+        save_btn.pack(side="left", expand=True, fill="x", padx=(0, 5), ipady=5)
+        
+        close_btn = ttk.Button(btn_frame, text="Close", command=self.settings_window.destroy, style="TButton")
+        close_btn.pack(side="left", expand=True, fill="x", padx=(5, 0), ipady=5)
 
         # --- Tabbed Interface ---
         notebook = ttk.Notebook(main_frame)
@@ -589,15 +698,34 @@ class OverlayApp:
         ttk.Button(calib_status_frame, text="1km 기준선 설정", 
                    command=self.start_calibration_mode, style="Accent.TButton").pack(fill="x", pady=10)
 
+        # Calibration Hotkey
+        calib_hk_frame = ttk.LabelFrame(distance_tab, text="기준선 설정 단축키", padding=10)
+        calib_hk_frame.pack(fill="x", pady=5, padx=10)
+        
+        f_calib = ttk.Frame(calib_hk_frame, style="TFrame")
+        f_calib.pack(fill="x", pady=5)
+        ttk.Label(f_calib, text="기준선 모드").pack(side="left")
+        
+        current_calib_key = self.config.get("Hotkeys", "calibrate_mode", fallback="<shift>+\\")
+        calib_entry = ttk.Entry(f_calib, width=15)
+        calib_entry.insert(0, current_calib_key)
+        calib_entry.pack(side="right")
+        
+        calib_entry.bind("<FocusIn>", lambda event: calib_entry.selection_range(0, tk.END))
+        calib_entry.bind("<KeyPress>", lambda event: self.capture_key(event, calib_entry))
+        calib_entry.bind("<KeyRelease>", lambda event: "break")
+        
+        self.entries["calibrate_mode"] = calib_entry
+
         # Measurement Hotkey
         measure_hk_frame = ttk.LabelFrame(distance_tab, text="측정 모드 단축키", padding=10)
-        measure_hk_frame.pack(fill="x", pady=10, padx=10)
+        measure_hk_frame.pack(fill="x", pady=5, padx=10)
 
         f = ttk.Frame(measure_hk_frame, style="TFrame")
         f.pack(fill="x", pady=5)
         ttk.Label(f, text="측정 모드").pack(side="left")
 
-        current_measure_key = self.config.get("Hotkeys", "measure_distance", fallback="<alt>+<f9>")
+        current_measure_key = self.config.get("Hotkeys", "measure_distance", fallback="\\")
         measure_entry = ttk.Entry(f, width=15)
         measure_entry.insert(0, current_measure_key)
         measure_entry.pack(side="right")
@@ -621,15 +749,7 @@ class OverlayApp:
         for instruction in instructions:
             ttk.Label(info_frame, text=instruction, font=("Segoe UI", 9)).pack(anchor="w", pady=2)
 
-        # Buttons (Bottom)
-        btn_frame = ttk.Frame(main_frame, style="TFrame")
-        btn_frame.pack(side="bottom", fill="x", pady=(20, 0))
-        
-        save_btn = ttk.Button(btn_frame, text="Save", command=self.save_settings, style="Accent.TButton")
-        save_btn.pack(side="left", expand=True, fill="x", padx=(0, 5), ipady=5)
-        
-        close_btn = ttk.Button(btn_frame, text="Close", command=self.settings_window.destroy, style="TButton")
-        close_btn.pack(side="left", expand=True, fill="x", padx=(5, 0), ipady=5)
+
 
     def capture_key(self, event, entry_widget):
         # Ignore modifier keys by themselves
@@ -670,6 +790,8 @@ class OverlayApp:
              formatted_key = f"<{key}>"
         elif key == "escape":
              formatted_key = "<esc>"
+        elif key == "backslash":
+             formatted_key = "\\"
         else:
              formatted_key = key
              

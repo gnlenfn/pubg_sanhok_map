@@ -12,7 +12,7 @@ import ctypes
 if platform.system() == "Windows":
     from ctypes import windll, wintypes
 
-CONFIG_VERSION = "1.0"
+CONFIG_VERSION = "1.1"
 
 class OverlayApp:
     def __init__(self, root):
@@ -80,6 +80,14 @@ class OverlayApp:
         self.image_item = None
         self.update_image()
 
+        # Distance measurement state
+        self.calibration_mode = False
+        self.measurement_mode = False
+        self.calibration_points = []
+        self.measurement_points = []
+        self.measurement_line = None
+        self.measurement_text = None
+
         # Initial hotkey setup
         self.listener = None
         self.setup_hotkeys()
@@ -137,7 +145,11 @@ class OverlayApp:
         self.config["Settings"] = {"mode": "QHD", "version": CONFIG_VERSION}
         self.config["Hotkeys"] = {
             "toggle_visibility": "<f8>",
-            "open_settings": "<f12>"
+            "open_settings": "<f12>",
+            "measure_distance": "<alt>+<f9>"
+        }
+        self.config["Calibration"] = {
+            "pixels_per_km": "0.0"
         }
         with open(self.config_file, "w") as configfile:
             self.config.write(configfile)
@@ -148,11 +160,13 @@ class OverlayApp:
 
         self.hotkey_visible = self.config.get("Hotkeys", "toggle_visibility", fallback="<f8>")
         self.hotkey_settings = self.config.get("Hotkeys", "open_settings", fallback="<f12>")
+        self.hotkey_measure = self.config.get("Hotkeys", "measure_distance", fallback="<alt>+<f9>")
 
         try:
             self.listener = keyboard.GlobalHotKeys({
                 self.hotkey_visible: self.toggle_visibility,
-                self.hotkey_settings: self.open_settings_window
+                self.hotkey_settings: self.open_settings_window,
+                self.hotkey_measure: self.toggle_measurement_mode
             })
             self.listener.start()
         except ValueError as e:
@@ -257,6 +271,193 @@ class OverlayApp:
         self.root.destroy()
         sys.exit(0)
 
+    def start_calibration_mode(self):
+        """Start calibration mode to set 1km baseline"""
+        print("Calibration mode started. Click two points 1km apart.")
+        self.calibration_mode = True
+        self.calibration_points = []
+        
+        # Hide overlay during calibration
+        if self.image_item:
+            self.canvas.delete(self.image_item)
+            self.image_item = None
+        
+        # Disable click-through temporarily
+        if platform.system() == "Windows":
+            try:
+                hwnd = windll.user32.GetParent(self.root.winfo_id())
+                style = windll.user32.GetWindowLongW(hwnd, -20)
+                # Remove WS_EX_TRANSPARENT
+                style = style & ~0x20
+                windll.user32.SetWindowLongW(hwnd, -20, style)
+            except Exception as e:
+                print(f"Failed to disable click-through: {e}")
+        
+        # Bind canvas click
+        self.canvas.bind("<Button-1>", self.handle_canvas_click)
+        
+        # Close settings window if open
+        if hasattr(self, 'settings_window') and self.settings_window.winfo_exists():
+            self.settings_window.destroy()
+
+    def toggle_measurement_mode(self):
+        """Toggle measurement mode on/off"""
+        if self.measurement_mode:
+            # Exit measurement mode
+            self.exit_measurement_mode()
+        else:
+            # Enter measurement mode
+            pixels_per_km = self.config.getfloat("Calibration", "pixels_per_km", fallback=0.0)
+            if pixels_per_km <= 0:
+                print("Please calibrate 1km baseline first!")
+                return
+            
+            print("Measurement mode started. Click two points to measure distance.")
+            self.measurement_mode = True
+            self.measurement_points = []
+            
+            # Hide overlay during measurement
+            if self.image_item:
+                self.canvas.delete(self.image_item)
+                self.image_item = None
+            
+            # Disable click-through temporarily
+            if platform.system() == "Windows":
+                try:
+                    hwnd = windll.user32.GetParent(self.root.winfo_id())
+                    style = windll.user32.GetWindowLongW(hwnd, -20)
+                    # Remove WS_EX_TRANSPARENT
+                    style = style & ~0x20
+                    windll.user32.SetWindowLongW(hwnd, -20, style)
+                except Exception as e:
+                    print(f"Failed to disable click-through: {e}")
+            
+            # Bind canvas click
+            self.canvas.bind("<Button-1>", self.handle_canvas_click)
+
+    def handle_canvas_click(self, event):
+        """Handle canvas clicks for calibration and measurement modes"""
+        if self.calibration_mode:
+            self.calibration_points.append((event.x, event.y))
+            
+            # Draw marker
+            marker_size = 10
+            self.canvas.create_oval(
+                event.x - marker_size, event.y - marker_size,
+                event.x + marker_size, event.y + marker_size,
+                fill="red", outline="white", width=2
+            )
+            
+            if len(self.calibration_points) == 2:
+                # Calculate pixel distance
+                x1, y1 = self.calibration_points[0]
+                x2, y2 = self.calibration_points[1]
+                pixel_distance = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                
+                # Draw line
+                self.canvas.create_line(x1, y1, x2, y2, fill="red", width=3)
+                
+                # Save to config
+                self.config.set("Calibration", "pixels_per_km", str(pixel_distance))
+                self.save_config_file()
+                
+                print(f"Calibration complete: 1km = {pixel_distance:.2f} pixels")
+                
+                # Exit calibration mode after 2 seconds
+                self.root.after(2000, self.exit_calibration_mode)
+        
+        elif self.measurement_mode:
+            self.measurement_points.append((event.x, event.y))
+            
+            # Draw marker
+            marker_size = 10
+            self.canvas.create_oval(
+                event.x - marker_size, event.y - marker_size,
+                event.x + marker_size, event.y + marker_size,
+                fill="#FF3250", outline="white", width=2
+            )
+            
+            if len(self.measurement_points) == 2:
+                # Calculate and display distance
+                distance_m = self.calculate_distance(
+                    self.measurement_points[0],
+                    self.measurement_points[1]
+                )
+                
+                x1, y1 = self.measurement_points[0]
+                x2, y2 = self.measurement_points[1]
+                
+                # Draw line
+                self.measurement_line = self.canvas.create_line(
+                    x1, y1, x2, y2, fill="#FF3250", width=3
+                )
+                
+                # Display distance text next to line
+                mid_x = (x1 + x2) / 2
+                mid_y = (y1 + y2) / 2
+                self.measurement_text = self.canvas.create_text(
+                    mid_x + 20, mid_y - 20,
+                    text=f"{distance_m:.0f}m",
+                    fill="#FF3250", font=("Arial", 20, "bold"),
+                    anchor="w"
+                )
+                
+                print(f"Distance: {distance_m:.0f}m")
+                
+                # Exit measurement mode after 3 seconds
+                self.root.after(3000, self.exit_measurement_mode)
+
+    def calculate_distance(self, point1, point2):
+        """Calculate real-world distance in meters between two points"""
+        x1, y1 = point1
+        x2, y2 = point2
+        pixel_distance = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+        
+        pixels_per_km = self.config.getfloat("Calibration", "pixels_per_km", fallback=1.0)
+        distance_km = pixel_distance / pixels_per_km
+        distance_m = distance_km * 1000
+        
+        return distance_m
+
+    def exit_calibration_mode(self):
+        """Exit calibration mode and restore overlay"""
+        self.calibration_mode = False
+        self.calibration_points = []
+        self.canvas.unbind("<Button-1>")
+        self.canvas.delete("all")
+        
+        # Restore click-through
+        if platform.system() == "Windows":
+            self.set_click_through()
+        
+        # Restore overlay
+        self.update_image()
+        print("Calibration mode exited.")
+
+    def exit_measurement_mode(self):
+        """Exit measurement mode and restore overlay"""
+        self.measurement_mode = False
+        self.measurement_points = []
+        self.canvas.unbind("<Button-1>")
+        
+        # Clear measurement visuals
+        if self.measurement_line:
+            self.canvas.delete(self.measurement_line)
+            self.measurement_line = None
+        if self.measurement_text:
+            self.canvas.delete(self.measurement_text)
+            self.measurement_text = None
+        
+        self.canvas.delete("all")
+        
+        # Restore click-through
+        if platform.system() == "Windows":
+            self.set_click_through()
+        
+        # Restore overlay
+        self.update_image()
+        print("Measurement mode exited.")
+
     def open_settings_window(self):
         if hasattr(self, 'settings_window') and self.settings_window.winfo_exists():
             self.settings_window.lift()
@@ -264,7 +465,7 @@ class OverlayApp:
 
         self.settings_window = tk.Toplevel(self.root)
         self.settings_window.title("Settings")
-        self.settings_window.geometry("400x550")
+        self.settings_window.geometry("450x600")
         self.settings_window.attributes("-topmost", True)
         self.settings_window.configure(bg="#2b2b2b") # Dark Background
 
@@ -290,19 +491,28 @@ class OverlayApp:
         style.map("TButton", background=[("active", "#555555")])
         style.configure("Accent.TButton", background=ACCENT_COLOR, foreground=FG_COLOR)
         style.map("Accent.TButton", background=[("active", "#006cc1")])
+        style.configure("TNotebook", background=BG_COLOR, borderwidth=0)
+        style.configure("TNotebook.Tab", background="#444444", foreground=FG_COLOR, padding=[10, 5])
+        style.map("TNotebook.Tab", background=[("selected", ACCENT_COLOR)])
 
-        # --- Content (Simple Layout) ---
-        
-        # Main Container with Padding
+        # --- Main Container ---
         main_frame = ttk.Frame(self.settings_window, style="TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
         # Header
         ttk.Label(main_frame, text="Settings", style="Header.TLabel").pack(anchor="w", pady=(0, 20))
 
+        # --- Tabbed Interface ---
+        notebook = ttk.Notebook(main_frame)
+        notebook.pack(fill="both", expand=True)
+
+        # === Tab 1: 사녹 (Sanhok - Existing Settings) ===
+        sanhok_tab = ttk.Frame(notebook, style="TFrame")
+        notebook.add(sanhok_tab, text="사녹")
+
         # Mode
-        mode_frame = ttk.LabelFrame(main_frame, text="Resolution Mode", padding=10)
-        mode_frame.pack(fill="x", pady=10)
+        mode_frame = ttk.LabelFrame(sanhok_tab, text="Resolution Mode", padding=10)
+        mode_frame.pack(fill="x", pady=10, padx=10)
         
         if not hasattr(self, 'var_mode'):
             self.var_mode = tk.StringVar(value=self.mode)
@@ -313,8 +523,8 @@ class OverlayApp:
         ttk.Radiobutton(mode_frame, text="FHD (1080p)", variable=self.var_mode, value="FHD").pack(side="left", padx=10)
 
         # Calibration
-        calib_frame = ttk.LabelFrame(main_frame, text="Calibration", padding=10)
-        calib_frame.pack(fill="x", pady=10)
+        calib_frame = ttk.LabelFrame(sanhok_tab, text="Calibration", padding=10)
+        calib_frame.pack(fill="x", pady=10, padx=10)
         
         defaults = {"scale_factor": 1.0, "offset_x": 0, "offset_y": 0}
         for label, var_name, conf_key, is_float in [
@@ -338,8 +548,8 @@ class OverlayApp:
             ttk.Entry(frame, textvariable=getattr(self, var_name), width=10).pack(side="right")
 
         # Hotkeys
-        hk_frame = ttk.LabelFrame(main_frame, text="Hotkeys", padding=10)
-        hk_frame.pack(fill="x", pady=10)
+        hk_frame = ttk.LabelFrame(sanhok_tab, text="Hotkeys", padding=10)
+        hk_frame.pack(fill="x", pady=10, padx=10)
 
         self.entries = {}
         for name, label in [("toggle_visibility", "Toggle On/Off"), 
@@ -360,7 +570,58 @@ class OverlayApp:
             
             self.entries[name] = entry
 
-        # Buttons (Simple Pack at Bottom)
+        # === Tab 2: 거리 측정 (Distance Measurement) ===
+        distance_tab = ttk.Frame(notebook, style="TFrame")
+        notebook.add(distance_tab, text="거리 측정")
+
+        # Calibration Status
+        calib_status_frame = ttk.LabelFrame(distance_tab, text="1km 기준선 설정", padding=10)
+        calib_status_frame.pack(fill="x", pady=10, padx=10)
+
+        pixels_per_km = self.config.getfloat("Calibration", "pixels_per_km", fallback=0.0)
+        status_text = "설정됨" if pixels_per_km > 0 else "미설정"
+        self.calib_status_label = ttk.Label(calib_status_frame, text=f"상태: {status_text}")
+        self.calib_status_label.pack(anchor="w", pady=5)
+
+        if pixels_per_km > 0:
+            ttk.Label(calib_status_frame, text=f"1km = {pixels_per_km:.2f} pixels").pack(anchor="w", pady=5)
+
+        ttk.Button(calib_status_frame, text="1km 기준선 설정", 
+                   command=self.start_calibration_mode, style="Accent.TButton").pack(fill="x", pady=10)
+
+        # Measurement Hotkey
+        measure_hk_frame = ttk.LabelFrame(distance_tab, text="측정 모드 단축키", padding=10)
+        measure_hk_frame.pack(fill="x", pady=10, padx=10)
+
+        f = ttk.Frame(measure_hk_frame, style="TFrame")
+        f.pack(fill="x", pady=5)
+        ttk.Label(f, text="측정 모드").pack(side="left")
+
+        current_measure_key = self.config.get("Hotkeys", "measure_distance", fallback="<alt>+<f9>")
+        measure_entry = ttk.Entry(f, width=15)
+        measure_entry.insert(0, current_measure_key)
+        measure_entry.pack(side="right")
+
+        measure_entry.bind("<FocusIn>", lambda event: measure_entry.selection_range(0, tk.END))
+        measure_entry.bind("<KeyPress>", lambda event: self.capture_key(event, measure_entry))
+        measure_entry.bind("<KeyRelease>", lambda event: "break")
+
+        self.entries["measure_distance"] = measure_entry
+
+        # Instructions
+        info_frame = ttk.LabelFrame(distance_tab, text="사용 방법", padding=10)
+        info_frame.pack(fill="x", pady=10, padx=10)
+        
+        instructions = [
+            "1. 먼저 '1km 기준선 설정' 버튼을 클릭",
+            "2. 게임 내 1km 떨어진 두 지점을 클릭",
+            "3. 측정 모드 단축키를 눌러 거리 측정 시작",
+            "4. 측정하려는 두 지점을 클릭하면 거리 표시"
+        ]
+        for instruction in instructions:
+            ttk.Label(info_frame, text=instruction, font=("Segoe UI", 9)).pack(anchor="w", pady=2)
+
+        # Buttons (Bottom)
         btn_frame = ttk.Frame(main_frame, style="TFrame")
         btn_frame.pack(side="bottom", fill="x", pady=(20, 0))
         
